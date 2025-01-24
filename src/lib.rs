@@ -43,12 +43,14 @@ extern crate log;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
+use std::time::SystemTime;
 use env_logger::{
     fmt::{Color, Style, StyledValue},
     Builder,
 };
 use log::Level;
+/// TODO make this an optional feature
+use chrono::{Utc, Local};
 
 /// Initializes the global logger with a pretty env logger.
 ///
@@ -62,6 +64,38 @@ use log::Level;
 pub fn init() {
     try_init().unwrap();
 }
+
+/// Which timestamp format the timed pretty env logger should output.
+#[derive(Clone, Debug)]
+pub enum TimestampType {
+    /// System time with millisecond precision
+    SystemTimeMillis,
+    /// RFC 3339, local time zone
+    LocalRfc3339,
+    /// RFC 3339, UTC
+    UtcRfc3339,
+}
+
+/// TODO don't save this as static mut (ew), do better (but without deps?)
+/// Default to system-time millis
+static mut TIMESTAMP_TYPE: TimestampType = TimestampType::SystemTimeMillis;
+
+/// Sets the timestamp type to use.
+/// Must be called before calling `init_timed()`, or it will not have any effect.
+///
+/// TODO for discussion with maintainer -->
+/// I'm declaring this as a separate function so that it doesn't require a whole additional entry
+/// path (init_timed_rfc3339() -> try_init_timed_rfc_3339() -> try_init_custom_env_rfc3339()...)
+/// but also we don't have to change any of the existing call signatures by adding arguments.
+/// But keeping this as global state feels incorrect, and I don't like that it's not call-order-safe
+/// (seems like you shouldn't be allowed to set the timestamp type after initializing a timed logger).
+/// What do you think? What's your preferred approach?
+pub fn set_timestamp_type(timestamp_type: TimestampType) {
+    unsafe {
+        TIMESTAMP_TYPE = timestamp_type;
+    }
+}
+
 
 /// Initializes the global logger with a timed pretty env logger.
 ///
@@ -192,7 +226,8 @@ pub fn formatted_builder() -> Builder {
 pub fn formatted_timed_builder() -> Builder {
     let mut builder = Builder::new();
 
-    builder.format(|f, record| {
+    let timestamp_format = unsafe { TIMESTAMP_TYPE.clone() };
+    builder.format(move |f, record| {
         use std::io::Write;
         let target = record.target();
         let max_width = max_target_width(target);
@@ -206,9 +241,21 @@ pub fn formatted_timed_builder() -> Builder {
             width: max_width,
         });
 
-        let time = f.timestamp_millis();
-
-        writeln!(f, " {} {} {} > {}", time, level, target, record.args(),)
+        // TODO statically resolve this match statement during closure construction
+        match timestamp_format {
+            TimestampType::SystemTimeMillis => {
+                let time = f.timestamp_millis();
+                writeln!(f, " {} {} {} > {}", time, level, target, record.args(),)
+            }
+            TimestampType::LocalRfc3339 => {
+                let time = Local::now().to_rfc3339();
+                writeln!(f, " {} {} {} > {}", time, level, target, record.args(),)
+            }
+            TimestampType::UtcRfc3339 => {
+                let time = Utc::now().to_rfc3339();
+                writeln!(f, " {} {} {} > {}", time, level, target, record.args(),)
+            }
+        }
     });
 
     builder
